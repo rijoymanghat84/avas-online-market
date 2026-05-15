@@ -1,35 +1,76 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 import path from "path";
 import { store } from "@/lib/store";
-
-const execAsync = promisify(exec);
 
 export async function POST(req: NextRequest) {
   try {
     const pythonDir = path.join(process.cwd(), "python");
-    const { stdout, stderr } = await execAsync(
-      `cd ${pythonDir} && python3 trend-engine.py --discover --sources reddit paa`,
-      { timeout: 60000, env: { ...process.env, PYTHONPATH: pythonDir } }
+
+    // Use spawn to separate stdout and stderr
+    const result = await new Promise<{ stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        const proc = spawn(
+          "python3",
+          ["trend-engine.py", "--discover", "--sources", "reddit", "paa"],
+          {
+            cwd: pythonDir,
+            env: { ...process.env, PYTHONPATH: pythonDir },
+          }
+        );
+
+        let stdout = "";
+        let stderr = "";
+
+        proc.stdout.on("data", (data) => {
+          stdout += data.toString();
+        });
+
+        proc.stderr.on("data", (data) => {
+          stderr += data.toString();
+        });
+
+        proc.on("close", (code) => {
+          if (code !== 0 && !stdout) {
+            reject(new Error(stderr || `Process exited with code ${code}`));
+          } else {
+            resolve({ stdout, stderr });
+          }
+        });
+
+        proc.on("error", reject);
+      }
     );
 
-    if (stderr) {
-      console.warn("[trend-engine stderr]", stderr);
+    if (result.stderr) {
+      console.warn("[trend-engine stderr]", result.stderr);
     }
 
-    // Parse the JSON output from the Python script
-    const lines = stdout.trim().split("\n");
-    const jsonLine = lines.find((line) => line.startsWith("{"));
+    // Parse JSON from stdout - find the largest JSON object
+    const stdout = result.stdout.trim();
+    let data: any = null;
 
-    if (!jsonLine) {
+    // Try parsing the whole stdout first
+    try {
+      data = JSON.parse(stdout);
+    } catch {
+      // Find JSON by looking for { ... } blocks
+      const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          data = JSON.parse(jsonMatch[0]);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (!data) {
       return NextResponse.json(
-        { error: "No JSON output from trend engine", raw: stdout },
+        { error: "No JSON output from trend engine", raw: stdout.slice(0, 500) },
         { status: 500 }
       );
     }
-
-    const data = JSON.parse(jsonLine);
 
     // Transform to frontend format and save to store
     const trends = data.trends?.map((t: any, idx: number) => {
