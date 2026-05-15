@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: avas-db
+    environment:
+      POSTGRES_USER: ava
+      POSTGRES_PASSWORD: ava_dev_pass
+      POSTGRES_DB: avas_online_market
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ava -d avas_online_market"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: avas-app
+    environment:
+      DATABASE_URL: postgresql://ava:ava_dev_pass@db:5432/avas_online_market
+      NEXTAUTH_SECRET: ava-dev-secret-change-in-prod
+      NEXTAUTH_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  pgdata:

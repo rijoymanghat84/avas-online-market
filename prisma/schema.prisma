@@ -1,0 +1,110 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ── Users ─────────────────────────────────────────────
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  password      String?
+  role          Role      @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  trendSearches TrendSearch[]
+  products      Product[]
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// ── Trend Searches ────────────────────────────────────
+model TrendSearch {
+  id          String   @id @default(cuid())
+  keyword     String
+  source      String   // "google_trends" | "reddit" | "paa" | "manual"
+  score       Int?     // 0-100 trend score
+  volume      Int?     // estimated search volume
+  category    String?
+  notes       String?
+  aiAnalyzed  Boolean  @default(false)
+  aiScore     Int?     // 0-100 viability score from Friday
+  aiNotes     String?  // Friday's analysis summary
+  status      String   @default("discovered") // discovered | analyzing | approved | rejected | published
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+
+  products    Product[]
+}
+
+// ── Products (PDF Guides) ─────────────────────────────
+model Product {
+  id              String   @id @default(cuid())
+  title           String
+  description     String?
+  priceEtsy       Float?
+  priceShopify    Float?
+  pdfPath         String?  // path to generated PDF
+  coverImagePath  String?  // path to cover image
+  etsyListingId   String?
+  shopifyProductId String?
+  status          String   @default("draft") // draft | review | approved | published | archived
+  tags            String?  // comma-separated tags
+  etsyTags        String?  // comma-separated
+  shopifyTags     String?  // comma-separated
+  seoTitle        String?
+  seoDescription  String?
+  salesCount      Int      @default(0)
+  revenue         Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String
+
+  trendSearch     TrendSearch? @relation(fields: [trendSearchId], references: [id])
+  trendSearchId   String?
+
+  competitors     Competitor[]
+  sales           Sale[]
+}
+
+// ── Competitors ───────────────────────────────────────
+model Competitor {
+  id          String   @id @default(cuid())
+  platform    String   // "etsy" | "gumroad" | "amazon"
+  title       String
+  price       Float?
+  url         String?
+  rating      Float?
+  reviews     Int?
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId   String
+}
+
+// ── Sales ─────────────────────────────────────────────
+model Sale {
+  id          String   @id @default(cuid())
+  platform    String   // "etsy" | "shopify"
+  orderId     String?
+  amount      Float
+  quantity    Int      @default(1)
+  currency    String   @default("USD")
+  soldAt      DateTime @default(now())
+
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId   String
+}
