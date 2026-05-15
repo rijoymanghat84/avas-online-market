@@ -1,16 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const productStore = new Map();
+import { store } from "@/lib/store";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const status = searchParams.get("status");
-
-  let products = Array.from(productStore.values());
-  if (status) {
-    products = products.filter((p: any) => p.status === status);
-  }
-
+  const status = searchParams.get("status") || undefined;
+  const products = store.getProducts({ status });
   return NextResponse.json({ products });
 }
 
@@ -20,9 +14,9 @@ export async function POST(req: NextRequest) {
   const product = {
     id,
     ...body,
-    status: "draft",
+    status: "draft" as const,
     createdAt: new Date().toISOString(),
   };
-  productStore.set(id, product);
+  store.saveProduct(product);
   return NextResponse.json(product, { status: 201 });
 }

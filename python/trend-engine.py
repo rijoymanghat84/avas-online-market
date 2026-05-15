@@ -7,8 +7,9 @@ Proxy-aware: gracefully degrades when proxy is not configured.
 import json
 import sys
 import time
+import os
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config import (
     PROXY_MODE,
@@ -27,12 +28,12 @@ def fetch_google_trends(geo: str = "US") -> List[Dict]:
         
         # Check for error responses
         if trends and "error" in trends[0]:
-            print(json.dumps({"warn": f"Google Trends: {trends[0]['message']}"}))
+            print(json.dumps({"warn": f"Google Trends: {trends[0]['message']}"}), file=sys.stderr)
             return []
         
         return trends
     except Exception as e:
-        print(json.dumps({"warn": f"Google Trends failed: {str(e)}"}))
+        print(json.dumps({"warn": f"Google Trends failed: {str(e)}"}), file=sys.stderr)
         return []
 
 
@@ -43,12 +44,12 @@ def fetch_reddit_trends(limit: int = 25) -> List[Dict]:
         trends = get_reddit_trends(limit=limit)
         
         if trends and "error" in trends[0]:
-            print(json.dumps({"warn": f"Reddit: {trends[0]['message']}"}))
+            print(json.dumps({"warn": f"Reddit: {trends[0]['message']}"}), file=sys.stderr)
             return []
         
         return trends
     except Exception as e:
-        print(json.dumps({"warn": f"Reddit failed: {str(e)}"}))
+        print(json.dumps({"warn": f"Reddit failed: {str(e)}"}), file=sys.stderr)
         return []
 
 
@@ -68,12 +69,22 @@ def fetch_paa_trends(seed_keywords: List[str] = None) -> List[Dict]:
         trends = discover_trends_from_paa(seed_keywords)
         
         if trends and "error" in trends[0]:
-            print(json.dumps({"warn": f"PAA: {trends[0]['message']}"}))
+            print(json.dumps({"warn": f"PAA: {trends[0]['message']}"}), file=sys.stderr)
             return []
         
         return trends
     except Exception as e:
-        print(json.dumps({"warn": f"PAA failed: {str(e)}"}))
+        print(json.dumps({"warn": f"PAA failed: {str(e)}"}), file=sys.stderr)
+        return []
+
+
+def fetch_demo_trends() -> List[Dict]:
+    """Return demo trends when all sources fail."""
+    try:
+        from demo_data import get_demo_trends
+        return get_demo_trends()
+    except Exception as e:
+        print(json.dumps({"warn": f"Demo data failed: {str(e)}"}), file=sys.stderr)
         return []
 
 
@@ -125,6 +136,7 @@ def discover_trends(
     sources: List[str] = None,
     max_trends: int = MAX_TRENDS_PER_RUN,
     min_score: float = MIN_INTEREST_SCORE,
+    use_demo: bool = False,
 ) -> Dict:
     """
     Main discovery function. Fetches from all enabled sources,
@@ -134,6 +146,7 @@ def discover_trends(
         sources: List of sources to use ["google", "reddit", "paa"]. None = all.
         max_trends: Max trends to return
         min_score: Minimum score threshold
+        use_demo: Force demo data
     """
     if sources is None:
         sources = ["google", "reddit", "paa"]
@@ -141,31 +154,44 @@ def discover_trends(
     all_trends = []
     source_stats = {}
     
-    # Fetch from each source
-    if "google" in sources:
-        print("[ENGINE] Fetching Google Trends...", file=sys.stderr)
-        gt = fetch_google_trends()
-        source_stats["google_trends"] = len(gt)
-        all_trends.extend(gt)
-        time.sleep(1)
+    if use_demo:
+        print("[ENGINE] Using demo data...", file=sys.stderr)
+        demo_trends = fetch_demo_trends()
+        source_stats["demo"] = len(demo_trends)
+        all_trends.extend(demo_trends)
+    else:
+        # Fetch from each source
+        if "google" in sources:
+            print("[ENGINE] Fetching Google Trends...", file=sys.stderr)
+            gt = fetch_google_trends()
+            source_stats["google_trends"] = len(gt)
+            all_trends.extend(gt)
+            time.sleep(1)
+        
+        if "reddit" in sources:
+            print("[ENGINE] Fetching Reddit trends...", file=sys.stderr)
+            rt = fetch_reddit_trends(limit=max_trends)
+            source_stats["reddit"] = len(rt)
+            all_trends.extend(rt)
+            time.sleep(0.5)
+        
+        if "paa" in sources:
+            print("[ENGINE] Fetching People Also Ask...", file=sys.stderr)
+            pt = fetch_paa_trends()
+            source_stats["people_also_ask"] = len(pt)
+            all_trends.extend(pt)
     
-    if "reddit" in sources:
-        print("[ENGINE] Fetching Reddit trends...", file=sys.stderr)
-        rt = fetch_reddit_trends(limit=max_trends)
-        source_stats["reddit"] = len(rt)
-        all_trends.extend(rt)
-        time.sleep(0.5)
-    
-    if "paa" in sources:
-        print("[ENGINE] Fetching People Also Ask...", file=sys.stderr)
-        pt = fetch_paa_trends()
-        source_stats["people_also_ask"] = len(pt)
-        all_trends.extend(pt)
+    # If no trends found, fall back to demo
+    if len(all_trends) == 0 and not use_demo:
+        print("[ENGINE] No trends found from sources. Falling back to demo data...", file=sys.stderr)
+        demo_trends = fetch_demo_trends()
+        source_stats["demo"] = len(demo_trends)
+        all_trends.extend(demo_trends)
     
     # Score each trend
     for trend in all_trends:
         trend["score"] = round(score_trend(trend), 1)
-        trend["discovered_at"] = datetime.utcnow().isoformat()
+        trend["discovered_at"] = datetime.now(timezone.utc).isoformat()
     
     # Filter by minimum score
     filtered = [t for t in all_trends if t["score"] >= min_score]
@@ -190,7 +216,7 @@ def discover_trends(
             "source_counts": source_stats,
             "proxy_mode": PROXY_MODE,
             "min_score": min_score,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     }
 
@@ -240,6 +266,7 @@ if __name__ == "__main__":
     parser.add_argument("--min-score", type=int, default=MIN_INTEREST_SCORE,
                         help=f"Minimum score threshold (default: {MIN_INTEREST_SCORE})")
     parser.add_argument("--details", help="Get deep details for a keyword")
+    parser.add_argument("--demo", action="store_true", help="Use demo data")
     
     args = parser.parse_args()
     
@@ -251,6 +278,7 @@ if __name__ == "__main__":
             sources=args.sources,
             max_trends=args.max,
             min_score=args.min_score,
+            use_demo=args.demo,
         )
         print(json.dumps(result, indent=2))
     else:

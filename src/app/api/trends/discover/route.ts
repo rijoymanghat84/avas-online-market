@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { exec } from "child_process";
 import { promisify } from "util";
 import path from "path";
+import { store } from "@/lib/store";
 
 const execAsync = promisify(exec);
 
@@ -30,20 +31,25 @@ export async function POST(req: NextRequest) {
 
     const data = JSON.parse(jsonLine);
 
-    // Transform to frontend format
-    const trends = data.trends?.map((t: any, idx: number) => ({
-      id: `${t.source}-${idx}-${Date.now()}`,
-      term: t.term || t.question || "Unknown",
-      score: t.score || 50,
-      source: t.source,
-      rank: t.rank || idx + 1,
-      status: "pending",
-      discoveredAt: t.discovered_at || new Date().toISOString(),
-      traffic: t.traffic,
-      upvotes: t.upvotes,
-      comments: t.comments,
-      question: t.question,
-    }));
+    // Transform to frontend format and save to store
+    const trends = data.trends?.map((t: any, idx: number) => {
+      const id = `${t.source}-${idx}-${Date.now()}`;
+      const trend = {
+        id,
+        term: t.term || t.question || "Unknown",
+        score: t.score || 50,
+        source: t.source,
+        rank: t.rank || idx + 1,
+        status: "pending" as const,
+        discoveredAt: t.discovered_at || new Date().toISOString(),
+        traffic: t.traffic,
+        upvotes: t.upvotes,
+        comments: t.comments,
+        question: t.question,
+      };
+      store.saveTrend(trend);
+      return trend;
+    });
 
     return NextResponse.json({
       trends: trends || [],
