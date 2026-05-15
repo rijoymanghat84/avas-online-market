@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Google Trends Scraper for Ava's Online Market
-Fetches daily trending searches via direct HTTP (more reliable than pytrends).
+Uses the internal API endpoint with proper headers + cookie jar.
 Proxy-aware: works with residential proxy when configured.
 """
 import json
@@ -9,56 +9,111 @@ import re
 import sys
 from typing import List, Dict
 import requests
-from bs4 import BeautifulSoup
 from config import get_proxy_dict, TRENDS_GEO
 
 
 def get_daily_trends(geo: str = TRENDS_GEO) -> List[Dict]:
     """
     Fetch daily trending searches from Google Trends.
-    Uses the RSS feed endpoint which is more stable than the web API.
+    Uses the internal API endpoint that the web UI calls.
     """
     proxy = get_proxy_dict()
+    session = requests.Session()
     
-    # Google Trends RSS feed for daily trends
-    # Geo codes: US, CA, GB, AU, IN, etc.
-    url = f"https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo}"
-    
+    # Step 1: Get the main page to establish cookies
+    main_url = f"https://trends.google.com/trends/trendingsearches/daily?geo={geo}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
     }
     
     try:
-        response = requests.get(
-            url,
+        # Get main page to establish session
+        r1 = session.get(
+            main_url,
             headers=headers,
             proxies=proxy,
             timeout=20,
             allow_redirects=True
         )
-        response.raise_for_status()
+        r1.raise_for_status()
         
-        soup = BeautifulSoup(response.text, "xml")
+        # Extract the token from the page
+        token_match = re.search(r'"token":"([^"]+)"', r1.text)
+        if not token_match:
+            # Try alternative pattern
+            token_match = re.search(r'"SNlM0e":"([^"]+)"', r1.text)
+        
+        token = token_match.group(1) if token_match else ""
+        
+        # Step 2: Call the internal API
+        api_url = f"https://trends.google.com/trends/api/dailytrends"
+        params = {
+            "hl": "en-US",
+            "tz": "-240",
+            "geo": geo,
+            "ns": "15",
+        }
+        if token:
+            params["token"] = token
+        
+        api_headers = {
+            **headers,
+            "Accept": "application/json, text/plain, */*",
+            "Referer": main_url,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        
+        r2 = session.get(
+            api_url,
+            headers=api_headers,
+            params=params,
+            proxies=proxy,
+            timeout=20,
+        )
+        r2.raise_for_status()
+        
+        # Parse response - Google prefixes JSON with )]}',
+        text = r2.text
+        if text.startswith(")]}'"):
+            text = text[4:]
+        
+        data = json.loads(text)
         
         results = []
-        items = soup.find_all("item")
+        default_stories = data.get("default", {}).get("trendingSearchesDays", [])
         
-        for idx, item in enumerate(items[:20]):  # Top 20
-            title = item.find("title")
-            traffic = item.find("ht:approx_traffic")
-            pub_date = item.find("pubDate")
-            picture = item.find("ht:picture")
-            
-            results.append({
-                "term": title.text if title else "Unknown",
-                "traffic": traffic.text if traffic else None,
-                "published": pub_date.text if pub_date else None,
-                "image": picture.text if picture else None,
-                "rank": idx + 1,
-                "source": "google_trends",
-                "geo": geo,
-            })
+        for day_data in default_stories[:1]:  # Just today
+            for story in day_data.get("trendingSearches", [])[:20]:
+                title = story.get("title", {}).get("query", "")
+                traffic = story.get("formattedTraffic", "")
+                
+                # Extract related articles for context
+                articles = []
+                for article in story.get("articles", [])[:3]:
+                    articles.append({
+                        "title": article.get("title", ""),
+                        "source": article.get("source", ""),
+                        "url": article.get("url", ""),
+                    })
+                
+                results.append({
+                    "term": title,
+                    "traffic": traffic,
+                    "articles": articles,
+                    "rank": len(results) + 1,
+                    "source": "google_trends",
+                    "geo": geo,
+                })
         
         return results
         
@@ -75,7 +130,7 @@ def get_daily_trends(geo: str = TRENDS_GEO) -> List[Dict]:
             }]
         return [{
             "error": "HTTP_ERROR",
-            "message": f"HTTP {e.response.status_code}",
+            "message": f"HTTP {e.response.status_code}: {e.response.text[:200]}",
         }]
     except Exception as e:
         return [{
@@ -91,31 +146,40 @@ def get_trending_searches(geo: str = TRENDS_GEO) -> List[Dict]:
 
 def get_interest_over_time(keywords: List[str], geo: str = TRENDS_GEO) -> Dict:
     """
-    Get interest-over-time data via Google Trends embed iframe.
-    Returns simplified trend direction (rising/falling/stable).
+    Get interest-over-time data via Google Trends explore API.
+    Simplified: returns trend direction only.
     """
     proxy = get_proxy_dict()
     results = {}
     
     for keyword in keywords:
         try:
-            # Use the Google Trends explore endpoint
-            url = (
-                f"https://trends.google.com/trends/explore"
-                f"?q={requests.utils.quote(keyword)}"
-                f"&geo={geo}"
-                f"&hl=en"
-            )
+            session = requests.Session()
             
-            response = requests.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"},
+            # Get explore page
+            explore_url = f"https://trends.google.com/trends/explore"
+            params = {
+                "q": keyword,
+                "geo": geo,
+                "hl": "en",
+            }
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            }
+            
+            r = session.get(
+                explore_url,
+                headers=headers,
+                params=params,
                 proxies=proxy,
                 timeout=15,
             )
             
-            # Extract trend data from embedded JSON
-            text = response.text
+            text = r.text
+            
+            # Extract timeline data
             match = re.search(r'"timelineData":(\[.*?\])', text)
             
             if match:
@@ -138,7 +202,7 @@ def get_interest_over_time(keywords: List[str], geo: str = TRENDS_GEO) -> Dict:
                 
                 results[keyword] = {
                     "trend": trend,
-                    "values": values[-12:] if len(values) > 12 else values,  # Last 12 points
+                    "values": values[-12:] if len(values) > 12 else values,
                 }
             else:
                 results[keyword] = {"trend": "unknown", "values": []}
@@ -156,26 +220,21 @@ def get_related_queries(keyword: str, geo: str = TRENDS_GEO) -> Dict:
     proxy = get_proxy_dict()
     
     try:
-        url = (
-            f"https://trends.google.com/trends/explore"
-            f"?q={requests.utils.quote(keyword)}"
-            f"&geo={geo}"
-        )
+        session = requests.Session()
+        url = f"https://trends.google.com/trends/explore?q={requests.utils.quote(keyword)}&geo={geo}"
         
-        response = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0"},
-            proxies=proxy,
-            timeout=15,
-        )
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
         
-        text = response.text
+        r = session.get(url, headers=headers, proxies=proxy, timeout=15)
+        text = r.text
         
         # Extract related queries
         top = []
         rising = []
         
-        # Look for related query patterns in the page
         related_pattern = re.findall(r'"query":"([^"]+)","value":(\d+)', text)
         for query, value in related_pattern[:10]:
             top.append({"query": query, "value": int(value)})
