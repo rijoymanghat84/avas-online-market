@@ -1,24 +1,23 @@
-import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
-  try {
-    const trends = await prisma.trendSearch.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 50,
-      include: {
-        products: {
-          select: { id: true, title: true, status: true },
-        },
-      },
-    });
+const trendStore = new Map();
 
-    return NextResponse.json({ success: true, trends });
-  } catch (error) {
-    console.error("Failed to fetch trends:", error);
-    return NextResponse.json(
-      { success: false, error: "Failed to fetch trends" },
-      { status: 500 }
-    );
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const status = searchParams.get("status");
+
+  let trends = Array.from(trendStore.values());
+  if (status) {
+    trends = trends.filter((t: any) => t.status === status);
   }
+
+  return NextResponse.json({ trends });
+}
+
+export async function POST(req: NextRequest) {
+  const body = await req.json();
+  const id = `trend-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const trend = { id, ...body, status: "pending", discoveredAt: new Date().toISOString() };
+  trendStore.set(id, trend);
+  return NextResponse.json(trend, { status: 201 });
 }
